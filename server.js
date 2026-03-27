@@ -39,7 +39,7 @@ app.get('/api/status', (req, res) => {
     ...status,
     botEnabled,
     hasCredentials: !!(credentials.regNumber && credentials.password),
-    regNumber: credentials.regNumber ? credentials.regNumber.substring(0, 4) + '****' : '',
+    regNumber: credentials.regNumber,
     cronRunning: cronJob !== null
   });
 });
