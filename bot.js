@@ -266,6 +266,25 @@ class AutoClassBot {
 
       this.log(`Found ${classes.length} class(es).`);
 
+      // Post-process classes to mathematically ensure 'ongoing' status using time strings
+      const nowMs = Date.now();
+      classes.forEach(c => {
+        if (c.time && c.status !== 'ongoing') {
+           const timeMatch = c.time.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|a\.m\.|p\.m\.)?)/ig);
+           if (timeMatch && timeMatch.length >= 2) {
+              const startTimestamp = this.parseSingleTime(timeMatch[0]);
+              const endTimestamp = this.parseSingleTime(timeMatch[1]);
+              if (startTimestamp && endTimestamp) {
+                 // Active from 5 minutes before scheduled start time, up to the end time
+                 if (nowMs >= (startTimestamp - 5 * 60000) && nowMs < endTimestamp) {
+                    this.log(`Time-based verify: overriding ${c.name} as ongoing based on schedule (${c.time}).`);
+                    c.status = 'ongoing';
+                 }
+              }
+           }
+        }
+      });
+
       // Find ongoing class
       const ongoingClass = classes.find(c => c.status === 'ongoing');
 
@@ -541,6 +560,37 @@ class AutoClassBot {
   }
 
   /**
+   * Parse a single time string like "09:00 PM" into an absolute Unix timestamp (ms)
+   * relative to today's schedule in IST.
+   */
+  parseSingleTime(timeStr) {
+    if (!timeStr) return null;
+    try {
+      const match = timeStr.trim().match(/(\d{1,2}):(\d{2})\s*(AM|PM|a\.m\.|p\.m\.)?/i);
+      if (match) {
+        let hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const ampm = match[3] ? match[3].toUpperCase().replace(/\./g, '') : null;
+        
+        if (ampm === 'PM' && hours < 12) hours += 12;
+        if (ampm === 'AM' && hours === 12) hours = 0;
+        if (!ampm && hours < 8) hours += 12; // Infer PM for small hours if AM/PM missing
+
+        const now = new Date();
+        const formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'Asia/Kolkata', year: 'numeric', month: 'numeric', day: 'numeric'
+        });
+        const [month, day, year] = formatter.format(now).split('/');
+        
+        // Convert to absolute UTC ms. IST is UTC+05:30.
+        const targetUtc = Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), hours, minutes, 0);
+        return targetUtc - (330 * 60000);
+      }
+    } catch(e) {}
+    return null;
+  }
+
+  /**
    * Parse the end time of a class to know when to resume checking
    */
   parseEndTime(timeStr) {
@@ -548,31 +598,8 @@ class AutoClassBot {
     try {
       const parts = timeStr.split(/[-]|to/i).map(s => s.trim());
       if (parts.length >= 2) {
-        let endStr = parts[1];
-        const match = endStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM|a\.m\.|p\.m\.)?/i);
-        if (match) {
-          let hours = parseInt(match[1], 10);
-          const minutes = parseInt(match[2], 10);
-          const ampm = match[3] ? match[3].toUpperCase().replace(/\./g, '') : null;
-          
-          if (ampm === 'PM' && hours < 12) hours += 12;
-          if (ampm === 'AM' && hours === 12) hours = 0;
-          if (!ampm && hours < 8) hours += 12;
-
-          const istStr = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-          const istDate = new Date(istStr);
-          istDate.setHours(hours, minutes, 0, 0);
-
-          let durationMs = istDate.getTime() - new Date(istStr).getTime();
-          if (durationMs < 0) {
-            istDate.setHours(istDate.getHours() + 12);
-            durationMs = istDate.getTime() - new Date(istStr).getTime();
-          }
-          
-          if (durationMs > 0 && durationMs < 5 * 60 * 60 * 1000) {
-            return Date.now() + durationMs;
-          }
-        }
+        const endTime = this.parseSingleTime(parts[1]);
+        if (endTime) return endTime;
       }
     } catch (e) {}
     return null;
