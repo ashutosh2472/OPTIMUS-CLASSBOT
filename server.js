@@ -96,7 +96,7 @@ app.get('/api/schedule', (req, res) => {
   res.json({ timetable: bot.timetable });
 });
 
-// Get live screenshot of the browser
+// Get latest screenshot (base64 JSON — used as fallback)
 app.get('/api/screenshot', async (req, res) => {
   const screenshot = await bot.takeScreenshot();
   if (screenshot) {
@@ -104,6 +104,90 @@ app.get('/api/screenshot', async (req, res) => {
   } else {
     res.json({ image: null, url: null, message: 'No browser session active' });
   }
+});
+
+// ── MJPEG Live Stream ──────────────────────────────────────────────────────
+// Streams Puppeteer screenshots as a continuous MJPEG feed (~1.5 fps).
+// The browser uses a plain <img src="/api/stream"> — no JS, no WebSocket.
+const STREAM_FPS_MS = 700; // ms between frames (~1.4 fps)
+const activeStreamClients = new Set();
+
+app.get('/api/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'multipart/x-mixed-replace; boundary=mjpegframe',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    'Connection': 'keep-alive',
+    'Transfer-Encoding': 'chunked',
+  });
+
+  let alive = true;
+  activeStreamClients.add(res);
+  bot.log(`MJPEG stream client connected (${activeStreamClients.size} active).`, 'info');
+
+  // Write a placeholder frame immediately so the browser shows something
+  const writePlaceholder = () => {
+    const svg = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720">` +
+      `<rect width="1280" height="720" fill="#1a1a1a"/>` +
+      `<text x="50%" y="50%" fill="#555" font-family="monospace" font-size="22" ` +
+      `text-anchor="middle" dominant-baseline="middle">No browser session active</text></svg>`
+    );
+    writeFrame(svg, 'image/svg+xml');
+  };
+
+  const writeFrame = (buffer, mime = 'image/jpeg') => {
+    if (!alive || res.destroyed) return false;
+    try {
+      res.write(
+        `--mjpegframe\r\n` +
+        `Content-Type: ${mime}\r\n` +
+        `Content-Length: ${buffer.length}\r\n\r\n`
+      );
+      res.write(buffer);
+      res.write('\r\n');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  writePlaceholder();
+
+  const streamLoop = async () => {
+    while (alive && !res.destroyed) {
+      try {
+        if (bot.page && !bot.page.isClosed()) {
+          const buf = await bot.page.screenshot({ type: 'jpeg', quality: 60 });
+          if (!writeFrame(buf)) break;
+        } else {
+          writePlaceholder();
+        }
+      } catch {
+        writePlaceholder();
+      }
+      // Wait for next frame
+      await new Promise(r => setTimeout(r, STREAM_FPS_MS));
+    }
+    cleanup();
+  };
+
+  const cleanup = () => {
+    alive = false;
+    activeStreamClients.delete(res);
+    try { res.end(); } catch {}
+    bot.log(`MJPEG stream client disconnected (${activeStreamClients.size} remaining).`, 'info');
+  };
+
+  req.on('close', () => { alive = false; });
+  req.on('error', () => { alive = false; });
+
+  streamLoop();
+});
+
+// How many clients are currently streaming
+app.get('/api/stream/status', (req, res) => {
+  res.json({ clients: activeStreamClients.size });
 });
 
 // Health check for Render

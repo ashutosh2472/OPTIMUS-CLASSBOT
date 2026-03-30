@@ -91,9 +91,12 @@
           <div class="section-header">
             <div class="header-with-status">
               <h2>Live Browser View</h2>
-              <span class="live-badge" id="liveBadge">● LIVE</span>
+              <span class="live-badge" id="liveBadge">&#9679; LIVE</span>
             </div>
-            <button class="btn-small" id="refreshScreenBtn">Refresh</button>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+              <button class="btn-small" id="streamToggleBtn">&#9654; Live Stream</button>
+              <button class="btn-small" id="refreshScreenBtn">Refresh</button>
+            </div>
           </div>
           <p class="url-bar" id="browserUrl">No active session</p>
           <div class="browser-frame" id="browserFrame">
@@ -102,7 +105,10 @@
               <span>No browser session active</span>
               <small>Click "Check Now" to wake bot</small>
             </div>
-            <img id="browserScreenshot" src="" alt="Live browser view" style="display:none;">
+            <!-- Snapshot polling mode -->
+            <img id="browserScreenshot" src="" alt="Live browser snapshot" style="display:none;width:100%;height:auto;border-radius:0 0 10px 10px;">
+            <!-- MJPEG live stream mode -->
+            <img id="browserStream" src="" alt="Live browser stream" style="display:none;width:100%;height:auto;border-radius:0 0 10px 10px;">
           </div>
         </section>
 
@@ -126,11 +132,56 @@
     const API = '';
     const $ = id => document.getElementById(id);
 
+    // ── View mode: 'stream' or 'snapshot' ──
+    let viewMode = 'snapshot';
+
     setInterval(fetchStatus, 5000);
     fetchStatus();
 
-    // Auto-refresh screenshot every 8 seconds
-    setInterval(fetchScreenshot, 8000);
+    // Snapshot polling every 5 seconds
+    let snapshotTimer = setInterval(fetchScreenshot, 5000);
+
+    // ── Stream toggle ──
+    $('streamToggleBtn').onclick = () => {
+      if (viewMode === 'snapshot') {
+        enableStream();
+      } else {
+        disableStream();
+      }
+    };
+
+    function enableStream() {
+      viewMode = 'stream';
+      // Stop snapshot polling to save resources
+      clearInterval(snapshotTimer);
+
+      // Point the stream img at the MJPEG endpoint
+      $('browserStream').src = `${API}/api/stream`;
+      $('browserStream').style.display = 'block';
+      $('browserScreenshot').style.display = 'none';
+      $('browserPlaceholder').style.display = 'none';
+      $('liveBadge').style.display = 'inline-flex';
+      $('streamToggleBtn').textContent = '&#9646;&#9646; Snapshot Mode';
+      $('streamToggleBtn').innerHTML = '&#9646;&#9646; Snapshot Mode';
+      $('streamToggleBtn').style.background = '#e8f5e9';
+      $('streamToggleBtn').style.borderColor = '#a5d6a7';
+      $('streamToggleBtn').style.color = '#2e7d32';
+    }
+
+    function disableStream() {
+      viewMode = 'snapshot';
+      // Stop the stream by clearing the src
+      $('browserStream').src = '';
+      $('browserStream').style.display = 'none';
+      $('liveBadge').style.display = 'none';
+      $('streamToggleBtn').innerHTML = '&#9654; Live Stream';
+      $('streamToggleBtn').style.background = '';
+      $('streamToggleBtn').style.borderColor = '';
+      $('streamToggleBtn').style.color = '';
+      // Resume snapshot polling
+      snapshotTimer = setInterval(fetchScreenshot, 5000);
+      fetchScreenshot();
+    }
 
     async function fetchStatus() {
       try {
@@ -145,6 +196,8 @@
     }
 
     async function fetchScreenshot() {
+      // Skip if stream mode is active
+      if (viewMode === 'stream') return;
       try {
         const res = await fetch(`${API}/api/screenshot`);
         const data = await res.json();
@@ -153,7 +206,7 @@
           $('browserScreenshot').style.display = 'block';
           $('browserPlaceholder').style.display = 'none';
           $('browserUrl').textContent = data.url || 'Unknown page';
-          $('liveBadge').style.display = 'inline-flex';
+          $('liveBadge').style.display = 'none'; // only show LIVE in stream mode
         } else {
           $('browserScreenshot').style.display = 'none';
           $('browserPlaceholder').style.display = 'flex';
