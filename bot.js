@@ -288,8 +288,30 @@ class AutoClassBot {
       // Find ongoing class
       const ongoingClass = classes.find(c => c.status === 'ongoing');
 
-      if (ongoingClass && ongoingClass.meetingId) {
-        this.log(`🎓 Ongoing class found: "${ongoingClass.name}" — Joining...`);
+      if (ongoingClass) {
+        this.log(`🎓 Ongoing class found: "${ongoingClass.name}"`);
+
+        // If meetingId wasn't found in the list view, try clicking to extract it
+        if (!ongoingClass.meetingId) {
+          this.log('meetingId missing — attempting to extract via click...');
+          const classIndex = classes.indexOf(ongoingClass);
+          const extractedId = await this.clickAndExtractMeetingId(classIndex);
+          if (extractedId) {
+            ongoingClass.meetingId = extractedId;
+            // Page may have navigated — go back to timetable if needed
+            if (!this.page.url().includes('m.jsp')) {
+              await this.page.goto(TIMETABLE_URL, { waitUntil: 'networkidle2', timeout: 20000 });
+            }
+          }
+        }
+
+        if (!ongoingClass.meetingId) {
+          this.log('Could not extract meetingId — cannot join class.', 'warn');
+          this.status = 'error';
+          return { joined: false, error: 'meetingId not found for ongoing class' };
+        }
+
+        this.log(`Joining "${ongoingClass.name}" with meetingId: ${ongoingClass.meetingId}`);
         const joined = await this.joinClass(ongoingClass);
         if (joined) {
           this.lastJoined = {
@@ -297,15 +319,18 @@ class AutoClassBot {
             time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
           };
           this.status = 'joined';
-          
+
           // Determine end time to pause checks
           this.activeClassEndTime = this.parseEndTime(ongoingClass.time);
           if (!this.activeClassEndTime) {
-            // Default to 60 mins from now if time is unknown
             this.activeClassEndTime = Date.now() + 60 * 60 * 1000;
           }
-          
+
           return { joined: true, className: ongoingClass.name };
+        } else {
+          this.log('joinClass returned false. Class may have ended or join failed.', 'warn');
+          this.status = 'error';
+          return { joined: false, error: 'Join attempt failed' };
         }
       } else {
         this.log('No ongoing class at the moment.');
@@ -361,14 +386,21 @@ class AutoClassBot {
     return await this.page.evaluate(() => {
       const classes = [];
 
-      // Method 1: List view items
-      const listItems = document.querySelectorAll('tr.fc-list-item');
+      // Helper: extract meetingId from any URL-like string
+      const extractId = (str) => {
+        if (!str) return '';
+        const m = str.match(/[?&]m=([a-f0-9-]+)/i);
+        return m ? m[1] : '';
+      };
+
+      // Method 1: List view rows
+      const listItems = document.querySelectorAll('tr.fc-list-item, tr.fc-list-event');
 
       if (listItems.length > 0) {
         listItems.forEach(row => {
-          const timeCell = row.querySelector('td.fc-list-item-time');
-          const titleCell = row.querySelector('td.fc-list-item-title');
-          const markerCell = row.querySelector('td.fc-list-item-marker');
+          const timeCell = row.querySelector('td.fc-list-item-time, td.fc-list-event-time');
+          const titleCell = row.querySelector('td.fc-list-item-title, td.fc-list-event-title');
+          const markerCell = row.querySelector('td.fc-list-item-marker, td.fc-list-event-dot-cell');
 
           if (!titleCell) return;
 
@@ -376,77 +408,137 @@ class AutoClassBot {
           const time = timeCell ? timeCell.textContent.trim() : '';
           const name = link ? link.textContent.trim() : titleCell.textContent.trim();
 
+          // Try all possible meetingId sources
           let meetingId = '';
-          if (link && link.href) {
-            try {
-              const url = new URL(link.href);
-              meetingId = url.searchParams.get('m') || '';
-            } catch {}
+          if (link) {
+            meetingId = extractId(link.href) ||
+                        extractId(link.getAttribute('onclick') || '') ||
+                        link.getAttribute('data-meeting') || '';
+          }
+          // Also scan the whole row for any hidden href/onclick with meeting info
+          if (!meetingId) {
+            const anyLink = row.querySelector('[href*="mi.jsp"],[href*="jnr.jsp"],[onclick*="mi.jsp"],[onclick*="jnr.jsp"]');
+            if (anyLink) {
+              meetingId = extractId(anyLink.href || '') || extractId(anyLink.getAttribute('onclick') || '');
+            }
+          }
+          // Data attributes on the row itself
+          if (!meetingId) {
+            meetingId = row.getAttribute('data-id') || row.getAttribute('data-event-id') || '';
           }
 
           // Determine status by marker color
           let status = 'unknown';
-          const marker = markerCell ? (markerCell.querySelector('.fc-event-dot, .fc-list-event-dot') || markerCell.querySelector('span')) : null;
+          const marker = markerCell
+            ? (markerCell.querySelector('.fc-event-dot, .fc-list-event-dot') || markerCell.querySelector('span'))
+            : null;
 
           if (marker) {
             const style = getComputedStyle(marker);
             const bgColor = style.backgroundColor || marker.style.backgroundColor || '';
             const match = bgColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-
             if (match) {
               const [, r, g, b] = match.map(Number);
-              if (g > 100 && g > r * 1.5 && g > b * 1.5) {
-                status = 'ongoing';
-              } else if (Math.abs(r - g) < 30 && Math.abs(g - b) < 30 && r > 80 && r < 200) {
-                status = 'ended';
-              } else {
-                status = 'upcoming';
-              }
+              if (g > 100 && g > r * 1.5 && g > b * 1.5) status = 'ongoing';
+              else if (Math.abs(r - g) < 30 && Math.abs(g - b) < 30 && r > 80 && r < 200) status = 'ended';
+              else status = 'upcoming';
             }
           }
 
-          classes.push({ name, time, meetingId, status });
+          // Store the click-element reference via index for later clicking
+          row._rowIndex = row.rowIndex;
+          classes.push({ name, time, meetingId, status, _rowSelector: `tr.fc-list-item:nth-child(${classes.length + 1}), tr.fc-list-event:nth-child(${classes.length + 1})` });
         });
       }
 
-      // Method 2: Any join links
-      if (classes.length === 0) {
-        const links = document.querySelectorAll('a[href*="mi.jsp"]');
-        links.forEach(link => {
-          try {
-            const url = new URL(link.href);
-            const meetingId = url.searchParams.get('m') || '';
-            classes.push({
-              name: link.textContent.trim(),
-              time: '',
-              meetingId,
-              status: 'unknown'
-            });
-          } catch {}
-        });
-      }
-
-      // Method 3: Direct join buttons
-      document.querySelectorAll('a[href*="jnr.jsp"]').forEach(btn => {
-        const match = btn.href.match(/m=([a-f0-9-]+)/i);
-        if (match) {
-          const meetingId = match[1];
-          const existing = classes.find(c => c.meetingId === meetingId);
-          if (!existing) {
-            classes.push({
-              name: btn.textContent.trim() || 'Live Class',
-              time: '',
-              meetingId,
-              status: 'ongoing'
-            });
-          } else {
-            existing.status = 'ongoing';
-          }
+      // Method 2: Any mi.jsp or jnr.jsp links anywhere on page
+      document.querySelectorAll('a[href*="mi.jsp"], a[href*="jnr.jsp"]').forEach(link => {
+        const meetingId = extractId(link.href);
+        if (!meetingId) return;
+        const existing = classes.find(c => c.meetingId === meetingId);
+        if (!existing) {
+          classes.push({
+            name: link.textContent.trim() || 'Live Class',
+            time: '',
+            meetingId,
+            status: link.href.includes('jnr.jsp') ? 'ongoing' : 'unknown'
+          });
+        } else if (link.href.includes('jnr.jsp')) {
+          existing.status = 'ongoing';
         }
       });
 
       return classes;
     });
+  }
+
+  /**
+   * Click a class event on the timetable to open its detail popup,
+   * then extract the meetingId from "Join" or "mi.jsp" links inside it.
+   */
+  async clickAndExtractMeetingId(classIndex) {
+    try {
+      this.log(`Clicking class row to extract meetingId (index ${classIndex})...`);
+
+      // Click the title cell of the target row
+      const clicked = await this.page.evaluate((idx) => {
+        const rows = Array.from(document.querySelectorAll('tr.fc-list-item, tr.fc-list-event'));
+        if (!rows[idx]) return false;
+        const titleCell = rows[idx].querySelector('td.fc-list-item-title a, td.fc-list-event-title a');
+        if (titleCell) { titleCell.click(); return true; }
+        rows[idx].click();
+        return true;
+      }, classIndex);
+
+      if (!clicked) return null;
+
+      // Wait for a popup/modal or navigation with meeting link
+      await this.delay(2000);
+
+      // Look for any join link in the now-visible popup or page
+      const meetingId = await this.page.evaluate(() => {
+        const extractId = (str) => {
+          if (!str) return '';
+          const m = str.match(/[?&]m=([a-f0-9-]+)/i);
+          return m ? m[1] : '';
+        };
+        // Check popup overlays first
+        const popupSelectors = [
+          '.fc-popover a', '.modal a', '.popup a',
+          '[class*="popover"] a', '[class*="modal"] a', '[class*="dialog"] a'
+        ];
+        for (const sel of popupSelectors) {
+          for (const a of document.querySelectorAll(sel)) {
+            const id = extractId(a.href);
+            if (id) return id;
+          }
+        }
+        // Fall back to any mi.jsp/jnr.jsp on the whole page
+        for (const a of document.querySelectorAll('a[href*="mi.jsp"], a[href*="jnr.jsp"]')) {
+          const id = extractId(a.href);
+          if (id) return id;
+        }
+        return null;
+      });
+
+      if (meetingId) {
+        this.log(`Extracted meetingId from click: ${meetingId}`);
+        return meetingId;
+      }
+
+      // If a navigation happened, check the new URL
+      const newUrl = this.page.url();
+      const urlId = (newUrl.match(/[?&]m=([a-f0-9-]+)/i) || [])[1];
+      if (urlId) {
+        this.log(`Extracted meetingId from URL after click: ${urlId}`);
+        return urlId;
+      }
+
+      return null;
+    } catch (e) {
+      this.log(`clickAndExtractMeetingId error: ${e.message}`, 'warn');
+      return null;
+    }
   }
 
   /**
