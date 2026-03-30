@@ -91,12 +91,15 @@
           <div class="section-header">
             <div class="header-with-status">
               <h2>Live Browser View</h2>
-              <span class="live-badge" id="liveBadge" style="display:inline-flex;">&#9679; LIVE</span>
             </div>
           </div>
-          <p class="url-bar" id="browserUrl">Connecting to stream...</p>
+          <p class="url-bar" id="browserUrl">Initializing view...</p>
           <div class="browser-frame" id="browserFrame">
-            <img id="browserStream" src="/api/stream" alt="Live browser stream" style="width:100%;height:auto;border-radius:0 0 10px 10px;">
+            <div class="browser-placeholder" id="browserPlaceholder">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              <span>No browser session active</span>
+            </div>
+            <img id="browserScreenshot" src="" alt="Live browser view" style="display:none;width:100%;height:auto;border-radius:0 0 10px 10px;">
           </div>
         </section>
 
@@ -120,11 +123,12 @@
     const API = '';
     const $ = id => document.getElementById(id);
 
-    // Live badge always visible
-    $('liveBadge').style.display = 'inline-flex';
-
     setInterval(fetchStatus, 5000);
     fetchStatus();
+
+    // Auto-refresh screenshot every 2 seconds as requested
+    setInterval(fetchScreenshot, 2000);
+    fetchScreenshot();
 
     async function fetchStatus() {
       try {
@@ -208,6 +212,26 @@
         $('logs').innerHTML = d.logs.slice().reverse().map(l =>
           `<div class="log ${l.level}"><span class="log-time">${l.timestamp.split(', ')[1]}</span><span class="log-msg">${l.message}</span></div>`
         ).join('');
+      }
+    }
+
+    async function fetchScreenshot() {
+      try {
+        const res = await fetch(`${API}/api/screenshot`);
+        const data = await res.json();
+        if (data.image) {
+          $('browserScreenshot').src = `data:image/webp;base64,${data.image}`;
+          $('browserScreenshot').style.display = 'block';
+          if ($('browserPlaceholder')) $('browserPlaceholder').style.display = 'none';
+          if (data.url) $('browserUrl').textContent = data.url;
+        } else {
+          $('browserScreenshot').style.display = 'none';
+          if ($('browserPlaceholder')) $('browserPlaceholder').style.display = 'flex';
+          $('browserUrl').textContent = 'Session inactive';
+        }
+      } catch {
+        $('browserScreenshot').style.display = 'none';
+        if ($('browserPlaceholder')) $('browserPlaceholder').style.display = 'flex';
       }
     }
 
