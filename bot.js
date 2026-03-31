@@ -312,8 +312,15 @@ class AutoClassBot {
         }
 
         this.log(`Joining "${ongoingClass.name}" with meetingId: ${ongoingClass.meetingId}`);
-        const joined = await this.joinClass(ongoingClass);
-        if (joined) {
+        const joinResult = await this.joinClass(ongoingClass);
+        
+        if (joinResult === 'TOO_EARLY') {
+          this.log(`Teacher hasn't started "${ongoingClass.name}" yet. Waiting for next run (approx 2 mins).`);
+          this.status = 'waiting';
+          return { joined: false, status: 'too_early' };
+        }
+
+        if (joinResult === true) {
           this.lastJoined = {
             name: ongoingClass.name,
             time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
@@ -328,7 +335,7 @@ class AutoClassBot {
 
           return { joined: true, className: ongoingClass.name };
         } else {
-          this.log('joinClass returned false. Class may have ended or join failed.', 'warn');
+          this.log('joinClass failed or class already ended.', 'warn');
           this.status = 'error';
           return { joined: false, error: 'Join attempt failed' };
         }
@@ -554,9 +561,16 @@ class AutoClassBot {
 
       // Check if join was successful
       const pageContent = await this.page.evaluate(() => document.body.innerText);
-      if (pageContent.includes('Too late') || pageContent.includes('already ended')) {
-        this.log('Class has already ended.', 'warn');
+      const pageContentLower = pageContent.toLowerCase();
+
+      if (pageContentLower.includes('too late') || pageContentLower.includes('already ended')) {
+        this.log('Class has already ended (Too late).', 'warn');
         return false;
+      }
+
+      if (pageContentLower.includes('too early') || pageContentLower.includes('not yet open') || pageContentLower.includes('cannot join meeting')) {
+        this.log('Teacher hasn\'t started the meeting yet (Too early).');
+        return 'TOO_EARLY';
       }
 
       // Select "Listen only" — retry up to 4 times with 3s gap
