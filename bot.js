@@ -556,8 +556,13 @@ class AutoClassBot {
       const joinUrl = `${BASE_URL}/secure/tla/jnr.jsp?m=${classInfo.meetingId}`;
       this.log(`Navigating to join URL: ${joinUrl}`);
 
-      await this.page.goto(joinUrl, { waitUntil: 'networkidle2', timeout: 20000 });
-      await this.delay(3000);
+      // Set a longer timeout (60s) — especially for LPU redirects to BBB
+      try {
+        await this.page.goto(joinUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      } catch (e) {
+        this.log(`Navigation reached timeout (60s), but proceeding to check for join status: ${e.message}`, 'warn');
+      }
+      await this.delay(5000); // Wait a bit longer for it to settle
 
       // Check if join was successful
       const pageContent = await this.page.evaluate(() => document.body.innerText);
