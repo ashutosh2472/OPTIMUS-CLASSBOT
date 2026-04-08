@@ -188,9 +188,13 @@ app.get('/api/stream/status', (req, res) => {
   res.json({ clients: activeStreamClients.size });
 });
 
-// Health check for Render
+// Health check for Render / Monitor services
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+app.get('/ping', (req, res) => {
+  res.json({ status: 'active', message: 'pong' });
 });
 
 // ========== Cron Scheduler ==========
@@ -230,7 +234,8 @@ function startSelfPing() {
   if (RENDER_URL) {
     setInterval(async () => {
       try {
-        await fetch(`${RENDER_URL}/health`);
+        const url = RENDER_URL.startsWith('http') ? RENDER_URL : `https://${RENDER_URL}`;
+        await fetch(`${url}/health`);
       } catch {}
     }, 14 * 60 * 1000); // Every 14 minutes
 
