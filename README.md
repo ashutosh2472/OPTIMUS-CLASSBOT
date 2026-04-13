@@ -35,7 +35,7 @@ npm install
 REG_NUMBER=12345678 PASSWORD=yourpass node server.js
 # Dashboard → http://localhost:3000
 ```
-
+## MAKE SURE TO STAR MY REPO :)
 ## Tech Stack
 Node.js · Puppeteer · Express · node-cron · Docker
 
